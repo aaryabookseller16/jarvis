@@ -31,9 +31,14 @@ def file_sha256(path, block_size=1 << 20):
     return digest.hexdigest()
 
 
+def cache_path(full_path):
+    """Return cache/<sha256>/ for an already resolved file, without creating it."""
+    return CACHE_ROOT / file_sha256(full_path)
+
+
 def cache_dir(full_path):
     """Return (and create) cache/<sha256>/ for an already resolved file."""
-    directory = CACHE_ROOT / file_sha256(full_path)
+    directory = cache_path(full_path)
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
@@ -61,7 +66,7 @@ def write_manifest(directory, updates):
 def load_or_build_chunks(requested_path):
     """Return the chunk list for a PDF, building and caching it when stale."""
     full = resolve_in_project(requested_path)
-    directory = cache_dir(full)
+    directory = cache_path(full)   # created only once extraction succeeds
     manifest = read_manifest(directory)
     chunks_file = directory / "chunks.json"
 
@@ -78,6 +83,7 @@ def load_or_build_chunks(requested_path):
             pass  # unreadable cache: fall through and rebuild
 
     text, page_starts = extract_pdf_text(full)
+    directory.mkdir(parents=True, exist_ok=True)
     chunks = chunk_text(text, page_starts, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
     chunks_file.write_text(json.dumps(chunks), encoding="utf-8")
 

@@ -1,14 +1,21 @@
+import logging
+
 from mcp.server import MCPServer
 from agent.tool import calculator as _calculator, read_file as _read_file, list_directory as _list_directory, search_files as _search_files
 from agent.tool import PdfError
 from agent.summarize import summarize_pdf_cached
+
+# pypdf logs warnings about malformed PDFs to stderr, which the chat client
+# shares, so they would print over the prompt. The tool result already says
+# what went wrong.
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 mcp = MCPServer("jarvis-tools")
 
 @mcp.tool()
 def calculator(expression: str) -> str:
     """Evaluate an arithmetic expression, for example '47 * 89' or '(3 + 4) * 2'. Use this for any math."""
-    return str(_calculator(expression))
+    return _calculator(expression)
 
 @mcp.tool()
 def read_file(requested_path: str) -> str:
@@ -33,6 +40,9 @@ def summarize_pdf(path: str) -> str:
         return summarize_pdf_cached(path)
     except PdfError as e:
         return str(e)
+    except ConnectionError:
+        # What the ollama client raises when no server is listening.
+        return "Ollama is not running; start it with `ollama serve`"
 
 
 if __name__ == "__main__":

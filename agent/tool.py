@@ -27,6 +27,9 @@ _BIN_OPS = {
     ast.Pow: operator.pow,
 }
 
+# Larger exponents can take minutes to compute and block the server.
+MAX_EXPONENT = 1000
+
 # Allowed unary operators (e.g. the minus in -5).
 _UNARY_OPS = {
     ast.UAdd: operator.pos,
@@ -52,6 +55,8 @@ def _eval_node(node):
             raise ValueError(f"Unsupported operator: {op_type.__name__}")
         left = _eval_node(node.left)
         right = _eval_node(node.right)
+        if op_type is ast.Pow and abs(right) > MAX_EXPONENT:
+            raise ValueError(f"exponent too large (limit {MAX_EXPONENT})")
         return _BIN_OPS[op_type](left, right)
 
     # A unary operation, e.g. -5
@@ -66,15 +71,16 @@ def _eval_node(node):
 
 
 def calculator(action_input):
-    """Evaluate an arithmetic expression string and return the numeric result.
+    """Evaluate an arithmetic expression string and return the result as text.
 
     Returns a string on error so the agent loop can feed it back to the model
     as an Observation instead of crashing.
     """
     try:
         tree = ast.parse(action_input, mode="eval")
-        return _eval_node(tree)
-    except (ValueError, SyntaxError, TypeError, ZeroDivisionError) as e:
+        # str() inside the try: a huge integer can fail to convert to text.
+        return str(_eval_node(tree))
+    except (ValueError, SyntaxError, TypeError, ZeroDivisionError, OverflowError) as e:
         return f"Error: could not evaluate {action_input!r} ({e})"
 
 def read_file(requested_path):
@@ -98,6 +104,8 @@ def read_file(requested_path):
             return f"This file does not exist in {ALLOWED_DIRECTORY}"
     except OSError:
         return f"This file does not exist in {ALLOWED_DIRECTORY}"
+    if file.suffix.lower() == ".pdf":
+        return "that file is a PDF; use summarize_pdf instead"
      # 5. else: read the text and return it, inside try/except so a
      # permission or decode error returns a message instead of crashing
     else:
@@ -138,22 +146,43 @@ def list_directory(requested_path="."):
     return "\n".join(entries) if entries else "(empty directory)"
 
 
+# Folders search_files never descends into: environment, VCS and generated
+# files, which would bury the project's own files and overflow the context.
+SEARCH_SKIP_DIRS = {"venv", ".git", "__pycache__", "cache"}
+MAX_SEARCH_RESULTS = 200
+
+
 def search_files(pattern):
     """Find files by name or glob pattern recursively inside the project. Read only, allow-listed."""
     ALLOWED_DIRECTORY = PROJECT_ROOT
     if not isinstance(pattern, str) or not pattern.strip():
         return "Please provide a filename pattern, for example '*.py'"
+    # Matching is lexical, so "../*" would walk out of the project. Refuse it
+    # up front instead of filtering results afterwards.
+    if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+        return f"Please submit a pattern inside {ALLOWED_DIRECTORY}"
     matches = []
     try:
         for p in ALLOWED_DIRECTORY.rglob(pattern):
             try:
                 rel = p.relative_to(ALLOWED_DIRECTORY)
-            except ValueError:
+                # resolve() follows symlinks, which could point outside.
+                if not p.resolve().is_relative_to(ALLOWED_DIRECTORY):
+                    continue
+            except (ValueError, OSError):
+                continue
+            if SEARCH_SKIP_DIRS.intersection(rel.parts):
                 continue
             matches.append(str(rel))
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, NotImplementedError) as e:
         return f"Error searching for {pattern!r} ({e})"
-    return "\n".join(sorted(matches)) if matches else f"No files matching {pattern!r}"
+    if not matches:
+        return f"No files matching {pattern!r}"
+    matches.sort()
+    if len(matches) > MAX_SEARCH_RESULTS:
+        extra = len(matches) - MAX_SEARCH_RESULTS
+        matches = matches[:MAX_SEARCH_RESULTS] + [f"... {extra} more, narrow the pattern"]
+    return "\n".join(matches)
 
 
 class PdfError(Exception):

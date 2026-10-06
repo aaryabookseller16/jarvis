@@ -19,12 +19,17 @@ async def main():
             for t in tools.tools:
                 print(f"  - {t.name}: {t.description}")
 
-            calc = await session.call_tool("calculator", {"expression": "47 * 89"})
-            print("calculator(47 * 89) ->", calc.content[0].text)
-
-            rf = await session.call_tool("read_file", {"requested_path": "tests/fixtures/todo.txt"})
-            print("read_file(todo.txt) ->", rf.content[0].text)
-
+            calls = [
+                ("calculator", {"expression": "47 * 89"}),
+                ("read_file", {"requested_path": "tests/fixtures/todo.txt"}),
+                ("list_directory", {"path": "tests/fixtures"}),
+                ("search_files", {"pattern": "*.py"}),
+                # A path outside the project: answers with a refusal, needs no Ollama.
+                ("summarize_pdf", {"path": "../outside.pdf"}),
+            ]
+            for name, arguments in calls:
+                result = await session.call_tool(name, arguments)
+                print(f"{name}({arguments}) ->", result.content[0].text[:200])
 
 if __name__ == "__main__":
     asyncio.run(main())
