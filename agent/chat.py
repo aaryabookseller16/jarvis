@@ -4,6 +4,7 @@ import sys              # gives us sys.executable, the path to the current Pytho
 import ollama           # talks to the local model
 from mcp import ClientSession, StdioServerParameters, stdio_client  # the MCP client pieces
 
+from agent import db
 from agent.parser import parse_input
 
 MODEL = "qwen2.5:14b"
@@ -59,6 +60,12 @@ async def run_tool(session, name, arguments):
     return result.content[0].text
 
 
+def remember(conn, conv_id, messages, role, kind, content):
+    # Keep the in-memory list and the database in step: one call does both.
+    messages.append({"role": role, "content": content})
+    db.insert_message(conn, conv_id, role, kind, content)
+
+
 async def main():
     # Recipe for starting the server: run "python -m agent.server" with THIS same Python,
     # so the subprocess uses your venv. Nothing launches yet; this is just the plan.
@@ -86,8 +93,11 @@ async def main():
             # model's chosen Action below.
             valid_tools = set(param_name)
 
-            # Seed the conversation with the system prompt built from the live tool list.
+            conn = db.connect()
+            conv_id = db.latest_or_new_conversation(conn)
+            # Fresh system prompt (decision 5) + saved history.
             messages = [{"role": "system", "content": build_system_prompt(tool_list)}]
+            messages += db.load_recent(conn, conv_id, 20)
 
             # Main chat loop: one pass per user question.
             while True:
@@ -96,16 +106,17 @@ async def main():
                     user = input("> ")
                 except (EOFError, KeyboardInterrupt):
                     print()
+                    conn.close()
                     return
                 if not user.strip():
                     continue
 
                 # Remember where this turn starts, so a failed turn can be undone.
                 turn_start = len(messages)
-                messages.append({"role": "user", "content": user})
+                remember(conn, conv_id, messages, "user", "user_input", user)
 
                 try:
-                    failed = await run_turn(session, messages, param_name, valid_tools)
+                    failed = await run_turn(session, messages, param_name, valid_tools, conn, conv_id)
                 except ConnectionError:
                     print("Ollama is not running; start it with `ollama serve` and ask again.")
                     failed = True
@@ -117,9 +128,12 @@ async def main():
                 # exchange; drop it so the next question starts from clean history.
                 if failed:
                     del messages[turn_start:]
+                    conn.rollback()
+                else:
+                    conn.commit()
 
 
-async def run_turn(session, messages, param_name, valid_tools):
+async def run_turn(session, messages, param_name, valid_tools, conn, conv_id):
     # One user question: loop model -> tool -> observation until a Final Answer.
     # Returns True if the turn failed, False if it ended with a Final Answer.
 
@@ -134,9 +148,6 @@ async def run_turn(session, messages, param_name, valid_tools):
 
     # Keep looping as long as the model wants a tool (not a final answer).
     while reply_tuple[0] != "final":
-        # Record the model's tool-asking reply in the history.
-        messages.append({"role": "assistant", "content": reply})
-
         tool_name = reply_tuple[1]
         tool_input = reply_tuple[2]
 
@@ -146,6 +157,7 @@ async def run_turn(session, messages, param_name, valid_tools):
                 print(f"Stopped: more than {MAX_STEPS} tool calls for one question.")
                 failed = True
                 break
+            call_kind, obs_kind = "tool_call", "observation"
             steps += 1
             # Valid tool + input: build the arguments dict keyed by the
             # tool's real parameter name, then run it ON THE SERVER.
@@ -178,13 +190,15 @@ async def run_turn(session, messages, param_name, valid_tools):
                 print("Failed: the model couldn't produce a valid tool call.")
                 failed = True
                 break
+            call_kind, obs_kind = "failed_tool_call", "correction"
             # Otherwise, the correction becomes the observation and we spend a retry.
             observation = correction
             retries -= 1
 
         # Feed the observation (tool result OR correction) back to the model
         # so it can decide the next step with the new information.
-        messages.append({"role": "user", "content": f"Observation: {observation}"})
+        remember(conn, conv_id, messages, "assistant", call_kind, reply)
+        remember(conn, conv_id, messages, "user", obs_kind, f"Observation: {observation}")
 
         # Ask the model again, now that it has seen the observation.
         reply = ask_model(messages)
@@ -193,7 +207,7 @@ async def run_turn(session, messages, param_name, valid_tools):
     # Loop ended because the model gave a Final Answer (and we did not fail).
     if not failed:
         print(reply)
-        messages.append({"role": "assistant", "content": reply})
+        remember(conn, conv_id, messages, "assistant", "final_answer", reply)
     return failed
 
 
