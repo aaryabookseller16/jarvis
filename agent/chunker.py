@@ -120,8 +120,9 @@ def chunk_text(text, page_starts, size=2000, overlap=200):
         page_end    1 indexed page holding the last character
 
     Chunks cover the whole text in order and overlap by roughly `overlap`
-    characters. The text is first split into pieces of at most size // 4 so
-    that packing has fine enough granularity to produce that overlap.
+    characters. The text is first split into pieces of at most
+    max(overlap, size // 4) so that packing has fine enough granularity to
+    produce that overlap.
     Returns [] for empty text.
     """
     if size <= 0:
