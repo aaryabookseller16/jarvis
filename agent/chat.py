@@ -10,6 +10,9 @@ from agent.parser import parse_input
 MODEL = "qwen2.5:14b"
 NUM_CTX = 8192   # Ollama defaults to 4096 and silently truncates past it
 MAX_STEPS = 10   # tool calls allowed per question, so a model stuck calling tools still stops
+TOKEN_BUDGET = 6000   # prompt tokens we allow, leaving the rest of NUM_CTX for the reply
+CHARS_PER_TOKEN = 2   # conservative: measured 1.94 to 4.66 chars per token
+HISTORY_ROWS = 200    # rows loaded at startup; fit_to_budget decides what the model sees
 
 # The fixed part of the system prompt: HOW to reply. This is scaffolding, not tool
 # info, so it is hardcoded. The tool list itself is added dynamically below.
@@ -39,11 +42,38 @@ def build_system_prompt(tools):
     return "\n".join(lines) + "\n" + FORMAT_RULES
 
 
+def estimate_tokens(message):
+    return len(message["content"]) // CHARS_PER_TOKEN
+
+
+def fit_to_budget(messages):
+    # Return a trimmed COPY for the model: the system prompt plus the newest
+    # messages that fit in TOKEN_BUDGET. `messages` itself is never changed, so
+    # turn_start in main() stays valid.
+    system, history = messages[0], messages[1:]
+    # The current turn (from the last user_input on) is always kept, even over
+    # budget, or the model would not see the question.
+    current = max(i for i, m in enumerate(history) if m.get("kind") == "user_input")
+    used = estimate_tokens(system) + sum(estimate_tokens(m) for m in history[current:])
+    keep = current
+    for i in range(current - 1, -1, -1):
+        used += estimate_tokens(history[i])
+        if used > TOKEN_BUDGET:
+            break
+        keep = i
+    # Start on a question, never mid turn (an orphan observation or answer).
+    while history[keep].get("kind") != "user_input":
+        keep += 1
+    return [system] + history[keep:]
+
+
 def ask_model(messages):
     # One model call with the settings every call shares. Returns the reply text.
     # Raises ConnectionError when Ollama is not running, ollama.ResponseError on
     # a server side problem such as a missing model.
-    resp = ollama.chat(model=MODEL, messages=messages, options={"temperature": 0, "num_ctx": NUM_CTX})
+    # Send only role and content: `kind` is our bookkeeping, not Ollama's.
+    payload = [{"role": m["role"], "content": m["content"]} for m in fit_to_budget(messages)]
+    resp = ollama.chat(model=MODEL, messages=payload, options={"temperature": 0, "num_ctx": NUM_CTX})
     return resp["message"]["content"]
 
 
@@ -62,7 +92,7 @@ async def run_tool(session, name, arguments):
 
 def remember(conn, conv_id, messages, role, kind, content):
     # Keep the in-memory list and the database in step: one call does both.
-    messages.append({"role": role, "content": content})
+    messages.append({"role": role, "kind": kind, "content": content})
     db.insert_message(conn, conv_id, role, kind, content)
 
 
@@ -97,7 +127,7 @@ async def main():
             conv_id = db.latest_or_new_conversation(conn)
             # Fresh system prompt (decision 5) + saved history.
             messages = [{"role": "system", "content": build_system_prompt(tool_list)}]
-            messages += db.load_recent(conn, conv_id, 20)
+            messages += db.load_recent(conn, conv_id, HISTORY_ROWS)
 
             # Main chat loop: one pass per user question.
             while True:

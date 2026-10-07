@@ -35,9 +35,9 @@ def latest_or_new_conversation(conn):
 
 def load_recent(conn, conversation_id, limit):
     """Return the last `limit` messages of a conversation, oldest first,
-    as [{"role": ..., "content": ...}, ...], skipping failed_tool_call and correction rows."""
+    as [{"role": ..., "kind": ..., "content": ...}, ...], skipping failed_tool_call and correction rows."""
     rows = conn.execute("""
-        SELECT role, content
+        SELECT role, kind, content
         FROM messages
         WHERE conversation_id = %s
           AND kind NOT IN ('failed_tool_call', 'correction')
@@ -45,4 +45,5 @@ def load_recent(conn, conversation_id, limit):
         LIMIT %s
     """, (conversation_id, limit)).fetchall()
 
-    return [{"role": role, "content": content} for role, content in reversed(rows)]
+    return [{"role": role, "kind": kind, "content": content}
+            for role, kind, content in reversed(rows)]
