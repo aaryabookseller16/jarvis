@@ -26,6 +26,8 @@ async def main():
                 ("search_files", {"pattern": "*.py"}),
                 # A path outside the project: answers with a refusal, needs no Ollama.
                 ("summarize_pdf", {"path": "../outside.pdf"}),
+                # BM25 search on the sample PDF: needs no Ollama, uses cached stats.
+                ("search_pdf", {"path": "sample.pdf", "query": "contract design", "k": 2}),
             ]
             for name, arguments in calls:
                 result = await session.call_tool(name, arguments)

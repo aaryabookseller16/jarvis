@@ -89,6 +89,7 @@ def load_or_build_chunks(requested_path):
 
     # Anything derived FROM these chunks is now stale.
     (directory / "summary.txt").unlink(missing_ok=True)
+    (directory / "bm25.json").unlink(missing_ok=True)
     write_manifest(directory, {
         "manifest_version": MANIFEST_VERSION,
         "chunk_size": CHUNK_SIZE,

@@ -5,7 +5,7 @@ import ollama           # talks to the local model
 from mcp import ClientSession, StdioServerParameters, stdio_client  # the MCP client pieces
 
 from agent import db
-from agent.parser import parse_input
+from agent.parser import make_arguments, parse_input
 
 MODEL = "qwen2.5:14b"
 NUM_CTX = 8192   # Ollama defaults to 4096 and silently truncates past it
@@ -20,7 +20,7 @@ FORMAT_RULES = """
 Respond in EXACTLY this format if you use a tool, then wait for the tool's answer.
 Thought: <your reasoning about what to do next>
 Action: <the exact name of one tool from the list above>
-Action Input: <the single input to that tool>
+Action Input: <the input to that tool: plain text if the tool takes one input, or a JSON object on one line if it takes several>
 
 When you have the final answer, respond in EXACTLY this format:
 Thought: <your reasoning>
@@ -37,7 +37,17 @@ def build_system_prompt(tools):
     # Each tool contributes one line: its name and the description from its docstring.
     lines = ["You are an agent that solves problems step by step using tools.", "", "Available tools:"]
     for t in tools:
-        lines.append(f"- {t.name}: {t.description}")
+        params = list(t.input_schema["properties"])
+        required = t.input_schema.get("required", [])
+        if len(params) == 1:
+            lines.append(f"- {t.name}: {t.description}")
+        else:
+            # Several inputs: name them, so the model knows the JSON keys to use.
+            names = []
+            for p in params:
+                names.append(p if p in required else f"{p} (optional)")
+            lines.append(f"- {t.name}: {t.description} "
+                         f"Inputs: {', '.join(names)}. Action Input must be a JSON object.")
     # Menu on top, then the format rules underneath.
     return "\n".join(lines) + "\n" + FORMAT_RULES
 
@@ -112,16 +122,18 @@ async def main():
             # Ask the server what tools exist. .tools is the list of tool definitions.
             tool_list = (await session.list_tools()).tools
 
-            # For each tool, find the name of its single parameter by reading its input
-            # schema (the schema the decorator built from the type hints). Example:
-            # calculator -> "expression", read_file -> "requested_path".
-            # We need this to turn the model's one Action Input string into the dict
-            # that call_tool expects, without hardcoding a name-to-parameter table.
-            param_name = {t.name: next(iter(t.input_schema["properties"])) for t in tool_list}
+            # Each tool's parameter names and which of them are required, read from its
+            # input schema. Tools with one parameter take the Action Input as plain text;
+            # tools with several take a JSON object (see make_arguments in parser.py).
+            tool_params = {}
+            for t in tool_list:
+                params = list(t.input_schema["properties"])
+                required = t.input_schema.get("required", [])
+                tool_params[t.name] = (params, required)
 
             # The set of tool names the server actually offers, used to validate the
             # model's chosen Action below.
-            valid_tools = set(param_name)
+            valid_tools = set(tool_params)
 
             conn = db.connect()
             conv_id = db.latest_or_new_conversation(conn)
@@ -146,7 +158,7 @@ async def main():
                 remember(conn, conv_id, messages, "user", "user_input", user)
 
                 try:
-                    failed = await run_turn(session, messages, param_name, valid_tools, conn, conv_id)
+                    failed = await run_turn(session, messages, tool_params, valid_tools, conn, conv_id)
                 except ConnectionError:
                     print("Ollama is not running; start it with `ollama serve` and ask again.")
                     failed = True
@@ -163,7 +175,7 @@ async def main():
                     conn.commit()
 
 
-async def run_turn(session, messages, param_name, valid_tools, conn, conv_id):
+async def run_turn(session, messages, tool_params, valid_tools, conn, conv_id):
     # One user question: loop model -> tool -> observation until a Final Answer.
     # Returns True if the turn failed, False if it ended with a Final Answer.
 
@@ -181,7 +193,14 @@ async def run_turn(session, messages, param_name, valid_tools, conn, conv_id):
         tool_name = reply_tuple[1]
         tool_input = reply_tuple[2]
 
+        # Turn the Action Input into the tool's arguments dict. arg_error is set
+        # when the input does not fit the tool (bad JSON, missing inputs).
+        arguments, arg_error = None, None
         if tool_name in valid_tools and tool_input is not None:
+            params, required = tool_params[tool_name]
+            arguments, arg_error = make_arguments(tool_input, params, required)
+
+        if arguments is not None:
             # Too many tool calls means the model is going in circles: stop.
             if steps == MAX_STEPS:
                 print(f"Stopped: more than {MAX_STEPS} tool calls for one question.")
@@ -192,12 +211,14 @@ async def run_turn(session, messages, param_name, valid_tools, conn, conv_id):
             # Valid tool + input: build the arguments dict keyed by the
             # tool's real parameter name, then run it ON THE SERVER.
             # This await waits for the server to execute the tool, not the model.
-            arguments = {param_name[tool_name]: tool_input}
             observation = await run_tool(session, tool_name, arguments)
         else:
             # Something was wrong with the model's reply. Figure out which
             # failure it was and build a correction to send back as feedback.
-            if tool_name is None and tool_input is None:
+            if arg_error is not None:
+                # Right tool, but the input did not fit its parameters.
+                correction = arg_error
+            elif tool_name is None and tool_input is None:
                 # Neither an Action nor a Final Answer: reply was off-format.
                 correction = (
                     "Error: your reply had no 'Action:' line and no 'Final Answer:' line. "
