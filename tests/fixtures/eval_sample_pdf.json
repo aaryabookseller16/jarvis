@@ -1,0 +1,19 @@
+{
+  "pdf": "sample.pdf",
+  "note": "Questions written from the text of sample.pdf (Deep Contract Design via Discontinuous Networks). A retrieved chunk counts as a hit if its text contains `answer` (case insensitive). `pages` is for humans; chunk ids change with chunk size, answer text does not. answer null means the PDF does not cover the question.",
+  "questions": [
+    {"id": "e1",  "type": "exact",      "question": "What does DeLU stand for?",                                                     "answer": "Discontinuous ReLU", "pages": [1, 2]},
+    {"id": "e2",  "type": "exact",      "question": "Which conference was the paper published at?",                                  "answer": "NeurIPS 2023",       "pages": [1]},
+    {"id": "e3",  "type": "exact",      "question": "What activation function does the bias network use?",                          "answer": "Tanh",               "pages": [6]},
+    {"id": "e4",  "type": "exact",      "question": "What is the ERC grant agreement number?",                                       "answer": "101077862",          "pages": [10]},
+    {"id": "n1",  "type": "number",     "question": "How many training samples were the Figure 1 networks trained with?",            "answer": "40K samples",        "pages": [8]},
+    {"id": "n2",  "type": "number",     "question": "How many hidden units do the DeLU and ReLU networks have in the optimality comparison?", "answer": "32 hidden units", "pages": [9]},
+    {"id": "n3",  "type": "number",     "question": "By how much does DeLU beat ReLU on optimality?",                                "answer": "28.29%",             "pages": [9]},
+    {"id": "n4",  "type": "number",     "question": "How much overhead does gradient-based inference save compared to LP inference?", "answer": "50-90%",           "pages": [9]},
+    {"id": "n5",  "type": "number",     "question": "What share of random directions must be nonlinear to mark a contract as on a boundary?", "answer": ">20%",      "pages": [10]},
+    {"id": "p1",  "type": "paraphrase", "question": "Which economists received the top economics prize for agreement theory?",       "answer": "Hart",               "pages": [1]},
+    {"id": "p2",  "type": "paraphrase", "question": "What do economists call it when a worker acts selfishly in secret after signing a deal?", "answer": "moral hazard", "pages": [1]},
+    {"id": "p3",  "type": "paraphrase", "question": "Where does the best deal for the employer always sit?",                          "answer": "on the boundary",    "pages": [2, 5]},
+    {"id": "x1",  "type": "not_covered","question": "Which dataset of real employment contracts did they use?",                      "answer": null,                 "pages": []}
+  ]
+}
